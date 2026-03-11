@@ -28,12 +28,12 @@ const client = new Client({
 
 // ========== CONFIG ==========
 const CONFIG = {
-  WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || 'CHANNEL_ID',
-  AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || 'ROLE_ID',
-  TICKET_CATEGORY_ID: process.env.TICKET_CATEGORY_ID || 'CATEGORY_ID',
-  TICKET_SUPPORT_ROLE_ID: process.env.TICKET_SUPPORT_ROLE_ID || 'SUPPORT_ROLE_ID',
+  WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || '1450458984606863535',
+  AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || '1471461739026579588',
+  TICKET_CATEGORY_ID: process.env.TICKET_CATEGORY_ID || '1481324268775149832',
+  TICKET_SUPPORT_ROLE_ID: process.env.TICKET_SUPPORT_ROLE_ID || '1450568426916675710',
   REACTION_ROLE_MESSAGE_ID: process.env.REACTION_ROLE_MESSAGE_ID || '',
-  AI_CHANNEL_ID: process.env.AI_CHANNEL_ID || 'AI_CHANNEL_ID',
+  AI_CHANNEL_ID: process.env.AI_CHANNEL_ID || '1481324102953209928',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
 };
 
@@ -44,10 +44,13 @@ const REACTION_ROLES = {
   '🟢': process.env.ROLE_GREEN || 'GREEN_ROLE_ID',
 };
 
+const GUILD_ID = '1450458983402967134';
+
 // ========== IN-MEMORY DATA ==========
 const levels = {}; // { userId: { xp, level } }
 const tickets = {}; // { userId: channelId }
 const cooldowns = {}; // { userId: timestamp }
+const aiCooldowns = {}; // { userId: timestamp }
 
 // ========== HELPERS ==========
 function getLevel(xp) {
@@ -104,8 +107,8 @@ const commands = [
     .setName('leaderboard')
     .setDescription('Show top 10 users by level'),
   new SlashCommandBuilder()
-    .setName('ticket')
-    .setDescription('Open a support ticket'),
+    .setName('ticketpanel')
+    .setDescription('Στέλνει το permanent ticket panel (Admin only)'),
   new SlashCommandBuilder()
     .setName('reactionroles')
     .setDescription('Send the reaction roles message (Admin only)'),
@@ -121,7 +124,7 @@ client.once(Events.ClientReady, async () => {
 
   const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
   try {
-    await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
+    await rest.put(Routes.applicationGuildCommands(client.user.id, GUILD_ID), { body: commands });
     console.log('✅ Slash commands registered globally');
   } catch (err) {
     console.error('❌ Failed to register commands:', err);
@@ -163,8 +166,17 @@ client.on(Events.MessageCreate, async message => {
     message.channel.send(`🎉 ${message.author} leveled up to **Level ${leveledUp}**!`);
   }
 
-  // AI Channel
+  // AI Channel — ignore slash commands (start with /)
   if (message.channel.id === CONFIG.AI_CHANNEL_ID && !message.author.bot) {
+    if (message.content.startsWith('/')) return;
+
+    const now = Date.now();
+    const aiCooldown = 10000; // 10 seconds
+    if (aiCooldowns[message.author.id] && now - aiCooldowns[message.author.id] < aiCooldown) {
+      const remaining = Math.ceil((aiCooldown - (now - aiCooldowns[message.author.id])) / 1000);
+      return message.reply(`⏳ Περίμενε **${remaining}** δευτερόλεπτα πριν ξαναρωτήσεις!`);
+    }
+    aiCooldowns[message.author.id] = now;
     await handleAI(message, message.content);
   }
 });
@@ -203,13 +215,13 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 });
 
 // ========== TICKET SYSTEM ==========
-async function createTicket(interaction) {
+async function openTicket(interaction) {
   const guild = interaction.guild;
   const user = interaction.user;
 
   if (tickets[user.id]) {
     return interaction.reply({
-      content: `❌ You already have an open ticket: <#${tickets[user.id]}>`,
+      content: `❌ Έχεις ήδη ανοιχτό ticket: <#${tickets[user.id]}>`,
       ephemeral: true,
     });
   }
@@ -220,8 +232,10 @@ async function createTicket(interaction) {
     parent: CONFIG.TICKET_CATEGORY_ID || null,
     permissionOverwrites: [
       { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-      { id: user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-      { id: CONFIG.TICKET_SUPPORT_ROLE_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
+      { id: user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
+      ...(CONFIG.TICKET_SUPPORT_ROLE_ID && CONFIG.TICKET_SUPPORT_ROLE_ID !== 'SUPPORT_ROLE_ID'
+        ? [{ id: CONFIG.TICKET_SUPPORT_ROLE_ID, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] }]
+        : []),
     ],
   });
 
@@ -230,23 +244,31 @@ async function createTicket(interaction) {
   const embed = new EmbedBuilder()
     .setColor(0x57f287)
     .setTitle('🎫 Support Ticket')
-    .setDescription(`Hello ${user}! Support will be with you shortly.\n\nClick **Close** to close this ticket.`)
+    .setDescription(`Γεια ${user}! Το support θα έρθει σύντομα.\n\n> Περίγραψε το πρόβλημά σου και περίμενε.\n\nΠάτα **Κλείσιμο** για να κλείσεις το ticket.`)
+    .setFooter({ text: `Ticket για: ${user.tag}` })
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 Close Ticket').setStyle(ButtonStyle.Danger)
+    new ButtonBuilder()
+      .setCustomId('close_ticket')
+      .setLabel('🔒 Κλείσιμο Ticket')
+      .setStyle(ButtonStyle.Danger)
   );
 
-  await channel.send({ embeds: [embed], components: [row] });
-  await interaction.reply({ content: `✅ Ticket created: ${channel}`, ephemeral: true });
+  await channel.send({ content: `${user}`, embeds: [embed], components: [row] });
+  await interaction.reply({ content: `✅ Ticket δημιουργήθηκε: ${channel}`, ephemeral: true });
 }
 
 client.on(Events.InteractionCreate, async interaction => {
+  // Button: open ticket από panel
+  if (interaction.isButton() && interaction.customId === 'open_ticket') {
+    return openTicket(interaction);
+  }
+
   // Button: close ticket
   if (interaction.isButton() && interaction.customId === 'close_ticket') {
     const channel = interaction.channel;
-    await interaction.reply({ content: '🔒 Closing ticket in 5 seconds...' });
-    // Remove user from channel, allow staff to archive
+    await interaction.reply({ content: '🔒 Το ticket κλείνει σε 5 δευτερόλεπτα...' });
     const userId = Object.keys(tickets).find(id => tickets[id] === channel.id);
     if (userId) delete tickets[userId];
     setTimeout(() => channel.delete().catch(console.error), 5000);
@@ -344,9 +366,27 @@ client.on(Events.InteractionCreate, async interaction => {
     return interaction.reply({ embeds: [embed] });
   }
 
-  // ---- TICKET ----
-  if (commandName === 'ticket') {
-    return createTicket(interaction);
+  // ---- TICKET PANEL ----
+  if (commandName === 'ticketpanel') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('🎫 Support Tickets')
+      .setDescription('Χρειάζεσαι βοήθεια;\nΠάτα το κουμπί παρακάτω για να ανοίξεις ένα **private ticket** με την ομάδα support.')
+      .setFooter({ text: interaction.guild.name })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('open_ticket')
+        .setLabel('📩 Άνοιγμα Ticket')
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    await interaction.channel.send({ embeds: [embed], components: [row] });
+    return interaction.reply({ content: '✅ Ticket panel στάλθηκε!', ephemeral: true });
   }
 
   // ---- REACTION ROLES MESSAGE ----
