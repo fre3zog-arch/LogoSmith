@@ -49,8 +49,6 @@ const CONFIG = {
   ANTI_LINK: process.env.ANTI_LINK === 'true',
   ANTI_SPAM: process.env.ANTI_SPAM !== 'true',
 
-};
-
 const REACTION_ROLES = {
   '🔴': process.env.ROLE_RED || '',
   '🔵': process.env.ROLE_BLUE || '',
@@ -618,13 +616,9 @@ client.on(Events.InteractionCreate, async interaction => {
         if (servicesChannel) {
           const requestContent = pendingRequests[targetUserId]?.content || '*(content unavailable)*';
           const announceEmbed = new EmbedBuilder()
-            .setColor(0x57f287)
-            .setTitle('✅ Service Request Accepted')
+            .setColor(0xffffff)
+            .setAuthor({ name: targetUser ? targetUser.tag : targetUserId, iconURL: targetUser ? targetUser.displayAvatarURL() : undefined })
             .setDescription(requestContent)
-            .addFields(
-              { name: '👤 Requested by', value: `<@${targetUserId}>`, inline: true },
-              { name: '✅ Accepted by', value: `${interaction.user.tag}`, inline: true }
-            )
             .setTimestamp();
           await servicesChannel.send({ embeds: [announceEmbed] }).catch(() => {});
         }
