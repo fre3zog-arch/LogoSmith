@@ -7,6 +7,8 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   ChannelType,
   SlashCommandBuilder,
   REST,
@@ -34,7 +36,7 @@ const GUILD_ID = '1450458983402967134';
 
 const CONFIG = {
   WELCOME_CHANNEL_ID: process.env.WELCOME_CHANNEL_ID || '1450458984606863535',
-  AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || '1471461739026579588',
+  AUTO_ROLE_ID: process.env.AUTO_ROLE_ID || '',
   TICKET_CATEGORY_ID: process.env.TICKET_CATEGORY_ID || '1481324268775149832',
   TICKET_SUPPORT_ROLE_ID: process.env.TICKET_SUPPORT_ROLE_ID || '1450568426916675710',
   REACTION_ROLE_MESSAGE_ID: process.env.REACTION_ROLE_MESSAGE_ID || '',
@@ -50,6 +52,9 @@ const CONFIG = {
   MIN_ACCOUNT_AGE_DAYS: parseInt(process.env.MIN_ACCOUNT_AGE_DAYS || '7'),
   ANTI_LINK: process.env.ANTI_LINK === 'true',
   ANTI_SPAM: process.env.ANTI_SPAM !== 'true',
+  VERIFY_CHANNEL_ID: process.env.VERIFY_CHANNEL_ID || '1481412482164850771',        // channel with verify button
+  VERIFY_ROLE_ID: process.env.VERIFY_ROLE_ID || '1471461739026579588',              // role given after verify
+  CHALLENGE_CHANNEL_ID: process.env.CHALLENGE_CHANNEL_ID || '1481412176802615438',  // channel for weekly challenges
 };
 
 const REACTION_ROLES = {
@@ -75,6 +80,7 @@ const polls = {};           // { messageId: { question, options, votes: {userId:
 const dailyCooldowns = {};  // { userId: timestamp }
 const voiceJoinTime = {};   // { userId: timestamp } for voice XP
 let wordFilter = [];        // array of blocked words
+let currentChallenge = null; // { title, description, difficulty, postedAt, messageId }
 
 const GAME_XP = {
   trivia_correct: 25,
@@ -404,6 +410,24 @@ const commands = [
       .addChoices({ name: 'add', value: 'add' }, { name: 'remove', value: 'remove' }, { name: 'list', value: 'list' }, { name: 'clear', value: 'clear' }))
     .addStringOption(o => o.setName('word').setDescription('Word to add or remove')),
 
+  new SlashCommandBuilder().setName('verifypanel').setDescription('Send the verification panel (Admin only)'),
+
+  new SlashCommandBuilder().setName('challenge').setDescription('Post a new code challenge (Admin only)')
+    .addStringOption(o => o.setName('title').setDescription('Challenge title').setRequired(true))
+    .addStringOption(o => o.setName('description').setDescription('Challenge description / task').setRequired(true))
+    .addStringOption(o => o.setName('difficulty').setDescription('Difficulty level').setRequired(true)
+      .addChoices(
+        { name: '🟢 Easy', value: 'easy' },
+        { name: '🟡 Medium', value: 'medium' },
+        { name: '🔴 Hard', value: 'hard' },
+        { name: '⚫ Expert', value: 'expert' }
+      )),
+
+  new SlashCommandBuilder().setName('currentchallenge').setDescription('Show the current active challenge'),
+
+  new SlashCommandBuilder().setName('submit').setDescription('Submit your solution to the current challenge')
+    .addStringOption(o => o.setName('solution').setDescription('Your solution / explanation').setRequired(true)),
+
   new SlashCommandBuilder().setName('langpanel').setDescription('Send programming language role panel (Admin only)'),
 
   new SlashCommandBuilder().setName('antilink').setDescription('Toggle anti-link protection (Admin only)')
@@ -699,8 +723,56 @@ async function openTicket(interaction) {
 // ========== INTERACTIONS ==========
 client.on(Events.InteractionCreate, async interaction => {
 
+  // SELECT MENUS
+  if (interaction.isStringSelectMenu()) {
+    if (interaction.customId.startsWith('lang_select_')) {
+      await interaction.deferReply({ ephemeral: true });
+      const selectedIds = interaction.values;
+      const category = interaction.customId.replace('lang_select_', '');
+
+      const added = [];
+      const removed = [];
+      const noRole = [];
+
+      for (const langId of selectedIds) {
+        const lang = LANGUAGE_ROLES.find(l => l.id === langId);
+        if (!lang) continue;
+        if (!lang.roleId) { noRole.push(lang.label); continue; }
+        const role = interaction.guild.roles.cache.get(lang.roleId);
+        if (!role) { noRole.push(lang.label); continue; }
+        if (interaction.member.roles.cache.has(lang.roleId)) {
+          await interaction.member.roles.remove(role).catch(() => {});
+          removed.push(`${lang.emoji} ${lang.label}`);
+        } else {
+          await interaction.member.roles.add(role).catch(() => {});
+          added.push(`${lang.emoji} ${lang.label}`);
+        }
+      }
+
+      if (selectedIds.length === 0)
+        return interaction.editReply('ℹ️ No languages selected. Your roles were not changed.');
+
+      const lines = [];
+      if (added.length) lines.push(`✅ **Added:** ${added.join(', ')}`);
+      if (removed.length) lines.push(`🗑️ **Removed:** ${removed.join(', ')}`);
+      if (noRole.length) lines.push(`⚠️ **Not configured yet:** ${noRole.join(', ')}`);
+      return interaction.editReply(lines.join('\n') || 'No changes made.');
+    }
+  }
+
   // BUTTONS
   if (interaction.isButton()) {
+    if (interaction.customId === 'verify_member') {
+      const roleId = CONFIG.VERIFY_ROLE_ID;
+      if (!roleId) return interaction.reply({ content: '❌ Verify role not configured. Ask an admin to set `VERIFY_ROLE_ID`.', ephemeral: true });
+      const role = interaction.guild.roles.cache.get(roleId);
+      if (!role) return interaction.reply({ content: '❌ Verify role not found.', ephemeral: true });
+      if (interaction.member.roles.cache.has(roleId))
+        return interaction.reply({ content: '✅ You are already verified!', ephemeral: true });
+      await interaction.member.roles.add(role).catch(console.error);
+      return interaction.reply({ content: '✅ You have been **verified**! Welcome to the server 🎉', ephemeral: true });
+    }
+
     if (interaction.customId === 'open_ticket') return openTicket(interaction);
     if (interaction.customId === 'close_ticket') {
       const channel = interaction.channel;
@@ -759,23 +831,42 @@ client.on(Events.InteractionCreate, async interaction => {
 
       return interaction.reply({ content: `${isAccept ? '✅ Accepted' : '❌ Rejected'} the request from <@${targetUserId}>.`, ephemeral: true });
     }
-    if (interaction.customId.startsWith('lang_')) {
-      const langId = interaction.customId.replace('lang_', '');
-      const lang = LANGUAGE_ROLES.find(l => l.id === langId);
-      if (!lang) return interaction.reply({ content: '❌ Language not found.', ephemeral: true });
-      if (!lang.roleId) return interaction.reply({ content: `⚠️ The role for **${lang.label}** hasn't been set up yet. Ask an admin to add the role ID.`, ephemeral: true });
+    if (interaction.customId.startsWith('lang_select_')) {
+      await interaction.deferReply({ ephemeral: true });
+      const selectedIds = interaction.values; // array of selected lang ids
+      const category = interaction.customId.replace('lang_select_', '');
+      const allCategoryLangs = LANGUAGE_ROLES.filter(l => l.category === category);
 
-      const role = interaction.guild.roles.cache.get(lang.roleId);
-      if (!role) return interaction.reply({ content: `❌ Role not found. Ask an admin to check the role ID for **${lang.label}**.`, ephemeral: true });
+      const added = [];
+      const removed = [];
+      const noRole = [];
 
-      const member = interaction.member;
-      if (member.roles.cache.has(lang.roleId)) {
-        await member.roles.remove(role).catch(console.error);
-        return interaction.reply({ content: `✅ Removed the **${lang.emoji} ${lang.label}** role.`, ephemeral: true });
-      } else {
-        await member.roles.add(role).catch(console.error);
-        return interaction.reply({ content: `✅ You now have the **${lang.emoji} ${lang.label}** role!`, ephemeral: true });
+      for (const langId of selectedIds) {
+        const lang = LANGUAGE_ROLES.find(l => l.id === langId);
+        if (!lang) continue;
+        if (!lang.roleId) { noRole.push(lang.label); continue; }
+        const role = interaction.guild.roles.cache.get(lang.roleId);
+        if (!role) { noRole.push(lang.label); continue; }
+        if (interaction.member.roles.cache.has(lang.roleId)) {
+          await interaction.member.roles.remove(role).catch(() => {});
+          removed.push(`${lang.emoji} ${lang.label}`);
+        } else {
+          await interaction.member.roles.add(role).catch(() => {});
+          added.push(`${lang.emoji} ${lang.label}`);
+        }
       }
+
+      // If nothing selected (user cleared the menu), do nothing
+      if (selectedIds.length === 0) {
+        return interaction.editReply('ℹ️ No languages selected. Your roles were not changed.');
+      }
+
+      const lines = [];
+      if (added.length) lines.push(`✅ **Added:** ${added.join(', ')}`);
+      if (removed.length) lines.push(`🗑️ **Removed:** ${removed.join(', ')}`);
+      if (noRole.length) lines.push(`⚠️ **Not configured yet:** ${noRole.join(', ')}`);
+
+      return interaction.editReply(lines.join('\n') || 'No changes made.');
     }
 
     if (interaction.customId.startsWith('autorole_')) {
@@ -1339,6 +1430,133 @@ React with 🎉 to enter!
   }
 
 
+
+  // VERIFYPANEL
+  if (commandName === 'verifypanel') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    const embed = new EmbedBuilder()
+      .setColor(0x57f287)
+      .setTitle('✅ Server Verification')
+      .setDescription(
+        `Welcome to **${interaction.guild.name}**!\n\n` +
+        `To gain access to the server, please click the **Verify** button below.\n\n` +
+        `By verifying, you confirm that you have read and agree to our server rules.`
+      )
+      .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
+      .setFooter({ text: interaction.guild.name })
+      .setTimestamp();
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('verify_member')
+        .setLabel('✅ Verify')
+        .setStyle(ButtonStyle.Success)
+    );
+
+    await interaction.channel.send({ embeds: [embed], components: [row] });
+    return interaction.reply({ content: '✅ Verification panel sent!', ephemeral: true });
+  }
+
+  // CHALLENGE (Admin posts a new challenge)
+  if (commandName === 'challenge') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    const title = interaction.options.getString('title');
+    const description = interaction.options.getString('description');
+    const difficulty = interaction.options.getString('difficulty');
+
+    const difficultyMap = {
+      easy:   { label: '🟢 Easy',   color: 0x57f287, xp: 50 },
+      medium: { label: '🟡 Medium', color: 0xfee75c, xp: 100 },
+      hard:   { label: '🔴 Hard',   color: 0xed4245, xp: 200 },
+      expert: { label: '⚫ Expert', color: 0x2f3136, xp: 350 },
+    };
+    const diff = difficultyMap[difficulty];
+
+    const targetChannel = CONFIG.CHALLENGE_CHANNEL_ID
+      ? interaction.guild.channels.cache.get(CONFIG.CHALLENGE_CHANNEL_ID)
+      : interaction.channel;
+
+    if (!targetChannel) return interaction.reply({ content: '❌ Challenge channel not found.', ephemeral: true });
+
+    const embed = new EmbedBuilder()
+      .setColor(diff.color)
+      .setTitle(`💻 Code Challenge — \${title}`)
+      .setDescription(description)
+      .addFields(
+        { name: '⚡ Difficulty', value: diff.label, inline: true },
+        { name: '🏆 XP Reward', value: `+\${diff.xp} XP for submitting`, inline: true },
+        { name: '📤 How to submit', value: 'Use `/submit` with your solution!', inline: false }
+      )
+      .setFooter({ text: `Posted by \${interaction.user.tag}` })
+      .setTimestamp();
+
+    const msg = await targetChannel.send({ embeds: [embed] });
+    currentChallenge = { title, description, difficulty, xp: diff.xp, postedAt: Date.now(), messageId: msg.id, channelId: targetChannel.id, submissions: new Set() };
+
+    return interaction.reply({ content: `✅ Challenge posted in \${targetChannel}!`, ephemeral: true });
+  }
+
+  // CURRENTCHALLENGE
+  if (commandName === 'currentchallenge') {
+    if (!currentChallenge) return interaction.reply({ content: '❌ No active challenge right now. Check back later!', ephemeral: true });
+    const difficultyMap = {
+      easy:   { label: '🟢 Easy',   color: 0x57f287 },
+      medium: { label: '🟡 Medium', color: 0xfee75c },
+      hard:   { label: '🔴 Hard',   color: 0xed4245 },
+      expert: { label: '⚫ Expert', color: 0x2f3136 },
+    };
+    const diff = difficultyMap[currentChallenge.difficulty];
+    const embed = new EmbedBuilder()
+      .setColor(diff.color)
+      .setTitle(`💻 Current Challenge — \${currentChallenge.title}`)
+      .setDescription(currentChallenge.description)
+      .addFields(
+        { name: '⚡ Difficulty', value: diff.label, inline: true },
+        { name: '🏆 XP Reward', value: `+\${currentChallenge.xp} XP`, inline: true },
+        { name: '👥 Submissions', value: `\${currentChallenge.submissions.size}`, inline: true },
+        { name: '📅 Posted', value: `<t:\${Math.floor(currentChallenge.postedAt / 1000)}:R>`, inline: true }
+      )
+      .setFooter({ text: 'Use /submit to send your solution!' });
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // SUBMIT
+  if (commandName === 'submit') {
+    if (!currentChallenge) return interaction.reply({ content: '❌ There is no active challenge right now.', ephemeral: true });
+    const solution = interaction.options.getString('solution');
+    const alreadySubmitted = currentChallenge.submissions.has(interaction.user.id);
+
+    currentChallenge.submissions.add(interaction.user.id);
+    const xpGain = alreadySubmitted ? Math.floor(currentChallenge.xp * 0.25) : currentChallenge.xp;
+    const leveledUp = addXp(interaction.user.id, xpGain);
+
+    // Post submission to challenge channel
+    const targetChannel = CONFIG.CHALLENGE_CHANNEL_ID
+      ? interaction.guild.channels.cache.get(CONFIG.CHALLENGE_CHANNEL_ID)
+      : interaction.channel;
+
+    if (targetChannel) {
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setAuthor({ name: interaction.user.tag, iconURL: interaction.user.displayAvatarURL() })
+        .setTitle(`📤 Solution — \${currentChallenge.title}`)
+        .setDescription(`\`\`\`\n\${solution}\n\`\`\``)
+        .addFields({ name: '🏆 XP Earned', value: `+\${xpGain} XP\${alreadySubmitted ? ' (resubmission)' : ''}`, inline: true })
+        .setTimestamp();
+      await targetChannel.send({ embeds: [embed] });
+    }
+
+    let reply = alreadySubmitted
+      ? `📤 Updated your submission! **+\${xpGain} XP** (resubmission bonus).`
+      : `✅ Solution submitted! **+\${xpGain} XP**!`;
+    if (leveledUp !== null) reply += ` 🆙 Level up! **Level \${leveledUp}**!`;
+    return interaction.reply({ content: reply, ephemeral: true });
+  }
+
   // LANGPANEL
   if (commandName === 'langpanel') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
@@ -1347,35 +1565,45 @@ React with 🎉 to enter!
     await interaction.deferReply({ ephemeral: true });
 
     const categories = [...new Set(LANGUAGE_ROLES.map(l => l.category))];
+    const categoryColors = {
+      'Web':       0x5865f2,
+      'Backend':   0x57f287,
+      'Mobile':    0xfee75c,
+      'Data':      0xeb459e,
+      'Scripting': 0xff9500,
+      'Other':     0xed4245,
+    };
 
     for (const category of categories) {
       const langs = LANGUAGE_ROLES.filter(l => l.category === category);
 
       const embed = new EmbedBuilder()
-        .setColor(0x5865f2)
+        .setColor(categoryColors[category] || 0x5865f2)
         .setTitle(`💻 ${category} Languages`)
         .setDescription(
-          langs.map(l => `${l.emoji} **${l.label}** — ${l.description}`).join('\n')
+          langs.map(l => `${l.emoji} **${l.label}** — ${l.description}`).join('\n') +
+          '\n\n> Use the dropdown below to **get or remove** a role.'
         )
-        .setFooter({ text: 'Click a button to get or remove the role' });
+        .setFooter({ text: `${langs.length} languages in this category` });
 
-      // Build rows of buttons (max 5 per row, max 5 rows = 25 buttons)
-      const rows = [];
-      for (let i = 0; i < langs.length; i += 5) {
-        const row = new ActionRowBuilder();
-        for (const lang of langs.slice(i, i + 5)) {
-          row.addComponents(
-            new ButtonBuilder()
-              .setCustomId(`lang_${lang.id}`)
-              .setLabel(lang.label)
-              .setEmoji(lang.emoji)
-              .setStyle(ButtonStyle.Secondary)
-          );
-        }
-        rows.push(row);
-      }
+      // Discord allows max 25 options per select menu
+      const menu = new StringSelectMenuBuilder()
+        .setCustomId(`lang_select_${category}`)
+        .setPlaceholder(`🔍 Pick a ${category} language...`)
+        .setMinValues(0)
+        .setMaxValues(Math.min(langs.length, 25))
+        .addOptions(
+          langs.slice(0, 25).map(l =>
+            new StringSelectMenuOptionBuilder()
+              .setLabel(l.label)
+              .setValue(l.id)
+              .setDescription(l.description.slice(0, 100))
+              .setEmoji(l.emoji)
+          )
+        );
 
-      await interaction.channel.send({ embeds: [embed], components: rows });
+      const row = new ActionRowBuilder().addComponents(menu);
+      await interaction.channel.send({ embeds: [embed], components: [row] });
     }
 
     return interaction.editReply('✅ Language role panels sent!');
