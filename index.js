@@ -58,6 +58,9 @@ const CONFIG = {
   VERIFY_CHANNEL_ID: process.env.VERIFY_CHANNEL_ID || '1481412482164850771',
   VERIFY_ROLE_ID: process.env.VERIFY_ROLE_ID || '1471461739026579588',
   CHALLENGE_CHANNEL_ID: process.env.CHALLENGE_CHANNEL_ID || '1481412176802615438',
+  IDEAS_CHANNEL_ID: process.env.IDEAS_CHANNEL_ID || '1481294600349028382',
+  TOP_IDEAS_CHANNEL_ID: process.env.TOP_IDEAS_CHANNEL_ID || '1481294600349028382',
+  IDEAS_VOTES_THRESHOLD: parseInt(process.env.IDEAS_VOTES_THRESHOLD || '5'), // net votes to promote to #top-ideas
 };
 
 const REACTION_ROLES = {
@@ -76,7 +79,8 @@ const warns = {};
 const games = {};
 const pendingRequests = {}; // { userId: messageId } — tracks pending service requests
 const captchaCodes = {};   // { userId: { code, expires } }
-const serviceRatings = {}; // { messageId: { providerId, ratings: { userId: stars }, total, count } }
+const serviceRatings = {};
+const ideasData = {}; // { messageId: { authorId, content, upvotes: Set, downvotes: Set, promoted: bool } } // { messageId: { providerId, ratings: { userId: stars }, total, count } }
 let statsMessageId = null;
 
 // Giveaway, Poll, Daily, Word filter, Voice XP
@@ -573,6 +577,13 @@ const commands = [
 
   new SlashCommandBuilder().setName('currentchallenge').setDescription('Show the current active challenge'),
 
+  new SlashCommandBuilder().setName('idea').setDescription('Submit an idea to the ideas channel')
+    .addStringOption(o => o.setName('idea').setDescription('Your idea').setRequired(true)),
+
+  new SlashCommandBuilder().setName('ideasleaderboard').setDescription('Show the top ideas by upvotes'),
+
+  new SlashCommandBuilder().setName('clearideas').setDescription('Clear the ideas leaderboard (Admin only)'),
+
   new SlashCommandBuilder().setName('submit').setDescription('Submit your solution to the current challenge')
     .addStringOption(o => o.setName('solution').setDescription('Your solution / explanation').setRequired(true)),
 
@@ -775,6 +786,17 @@ client.on(Events.MessageCreate, async message => {
     for (let i = 1; i < chunks.length; i++) await message.channel.send(chunks[i]);
   }
 
+  // IDEAS CHANNEL — only /idea allowed, delete everything else
+  if (CONFIG.IDEAS_CHANNEL_ID && message.channel.id === CONFIG.IDEAS_CHANNEL_ID) {
+    if (message.content.startsWith('/')) return; // allow slash commands
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+      await message.delete().catch(() => {});
+      const warn = await message.channel.send(`🚫 ${message.author} Use \`/idea\` to submit your idea!`);
+      setTimeout(() => warn.delete().catch(() => {}), 5000);
+      return;
+    }
+  }
+
   // CHALLENGE CHANNEL — only /submit allowed, delete everything else
   const effectiveChallengeChannel = challengePanelChannelId || CONFIG.CHALLENGE_CHANNEL_ID;
   if (effectiveChallengeChannel && message.channel.id === effectiveChallengeChannel) {
@@ -857,6 +879,46 @@ client.on(Events.MessageCreate, async message => {
 client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
+
+  // IDEAS VOTING
+  const ideaData = ideasData[reaction.message.id];
+  if (ideaData && (reaction.emoji.name === '✅' || reaction.emoji.name === '❌')) {
+    if (user.id === ideaData.authorId) {
+      await reaction.users.remove(user.id).catch(() => {});
+      return;
+    }
+    // Remove opposite reaction
+    if (reaction.emoji.name === '✅') ideaData.downvotes.delete(user.id);
+    else ideaData.upvotes.delete(user.id);
+
+    if (reaction.emoji.name === '✅') ideaData.upvotes.add(user.id);
+    else ideaData.downvotes.add(user.id);
+
+    await updateIdeaEmbed(reaction.message, ideaData);
+
+    // Promote to #top-ideas if net votes threshold reached
+    const net = ideaData.upvotes.size - ideaData.downvotes.size;
+    if (!ideaData.promoted && net >= CONFIG.IDEAS_VOTES_THRESHOLD && CONFIG.TOP_IDEAS_CHANNEL_ID) {
+      const topChannel = reaction.message.guild.channels.cache.get(CONFIG.TOP_IDEAS_CHANNEL_ID);
+      if (topChannel) {
+        const author = await reaction.message.guild.members.fetch(ideaData.authorId).catch(() => null);
+        const topEmbed = new EmbedBuilder()
+          .setColor(0xfee75c)
+          .setTitle('💡 Top Idea')
+          .setDescription(ideaData.content)
+          .setAuthor({ name: author ? author.user.tag : 'Unknown', iconURL: author ? author.user.displayAvatarURL({ dynamic: true }) : undefined })
+          .addFields({ name: '🔥 Net Votes', value: `+${net}`, inline: true })
+          .setFooter({ text: 'Community approved!' })
+          .setTimestamp();
+        await topChannel.send({ embeds: [topEmbed] });
+        ideaData.promoted = true;
+        // Update original embed to show promoted
+        await updateIdeaEmbed(reaction.message, ideaData);
+      }
+    }
+    return;
+  }
+
   if (reaction.message.id !== CONFIG.REACTION_ROLE_MESSAGE_ID) return;
   const roleId = REACTION_ROLES[reaction.emoji.name];
   if (!roleId) return;
@@ -866,9 +928,35 @@ client.on(Events.MessageReactionAdd, async (reaction, user) => {
   if (role) await member.roles.add(role).catch(console.error);
 });
 
+async function updateIdeaEmbed(message, data) {
+  try {
+    const oldEmbed = message.embeds[0];
+    if (!oldEmbed) return;
+    const net = data.upvotes.size - data.downvotes.size;
+    const statusLine = data.promoted ? '\n\n✨ **Promoted to #top-ideas!**' : '';
+    const newEmbed = EmbedBuilder.from(oldEmbed)
+      .spliceFields(0, oldEmbed.fields.length,
+        { name: '✅ Upvotes', value: `${data.upvotes.size}`, inline: true },
+        { name: '❌ Downvotes', value: `${data.downvotes.size}`, inline: true },
+        { name: '📊 Score', value: `${net > 0 ? '+' : ''}${net}${statusLine}`, inline: true }
+      );
+    await message.edit({ embeds: [newEmbed] }).catch(() => {});
+  } catch {}
+}
+
 client.on(Events.MessageReactionRemove, async (reaction, user) => {
   if (user.bot) return;
   if (reaction.partial) await reaction.fetch().catch(() => {});
+
+  // IDEAS VOTING — remove vote
+  const ideaData = ideasData[reaction.message.id];
+  if (ideaData && (reaction.emoji.name === '✅' || reaction.emoji.name === '❌')) {
+    if (reaction.emoji.name === '✅') ideaData.upvotes.delete(user.id);
+    else ideaData.downvotes.delete(user.id);
+    await updateIdeaEmbed(reaction.message, ideaData);
+    return;
+  }
+
   if (reaction.message.id !== CONFIG.REACTION_ROLE_MESSAGE_ID) return;
   const roleId = REACTION_ROLES[reaction.emoji.name];
   if (!roleId) return;
@@ -1091,6 +1179,37 @@ client.on(Events.InteractionCreate, async interaction => {
       setTimeout(() => channel.delete().catch(console.error), 5000);
       return;
     }
+    // IDEA APPROVE/REJECT
+    if (interaction.customId.startsWith('idea_approve_') || interaction.customId.startsWith('idea_reject_')) {
+      if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+        return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+      const msgId = interaction.customId.replace('idea_approve_', '').replace('idea_reject_', '');
+      const isApprove = interaction.customId.startsWith('idea_approve_');
+      const data = ideasData[msgId];
+
+      // Remove buttons
+      await interaction.message.edit({ components: [] }).catch(() => {});
+
+      const oldEmbed = interaction.message.embeds[0];
+      const statusEmbed = EmbedBuilder.from(oldEmbed)
+        .setColor(isApprove ? 0x57f287 : 0xed4245)
+        .setFooter({ text: isApprove ? `✅ Approved by ${interaction.user.tag}` : `❌ Rejected by ${interaction.user.tag}` });
+      await interaction.message.edit({ embeds: [statusEmbed] }).catch(() => {});
+
+      // Award XP to author if approved
+      if (isApprove && data) {
+        addXp(data.authorId, 50, interaction.guild);
+        const author = await client.users.fetch(data.authorId).catch(() => null);
+        if (author) author.send(`✅ Your idea in **${interaction.guild.name}** was approved! **+50 XP** awarded 🎉`).catch(() => {});
+      } else if (!isApprove && data) {
+        const author = await client.users.fetch(data.authorId).catch(() => null);
+        if (author) author.send(`❌ Your idea in **${interaction.guild.name}** was not approved this time.`).catch(() => {});
+      }
+
+      return interaction.reply({ content: `${isApprove ? '✅ Idea approved' : '❌ Idea rejected'}!`, ephemeral: true });
+    }
+
     if (interaction.customId.startsWith('service_accept_') || interaction.customId.startsWith('service_reject_')) {
       if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
         return interaction.reply({ content: '❌ Only admins can accept or reject requests.', ephemeral: true });
@@ -1650,20 +1769,98 @@ client.on(Events.InteractionCreate, async interaction => {
   if (commandName === 'help') {
     const isAdmin = interaction.member.permissions.has(PermissionsBitField.Flags.Administrator);
     const isMod = interaction.member.permissions.has(PermissionsBitField.Flags.ModerateMembers);
+
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('📖 Available Commands')
-      .setFooter({ text: 'Showing commands available to you' })
+      .setTitle('📖 Command Reference')
+      .setDescription('Here are all the commands available to you.')
+      .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
+      .setFooter({ text: interaction.guild.name + ' • Only showing commands available to you', iconURL: interaction.client.user.displayAvatarURL() })
       .setTimestamp();
 
-    embed.addFields({ name: '🟢 General', value: '`/ping`  `/level`  `/leaderboard`  `/ticket`  `/ai`  `/clear`  `/daily`  `/help`' });
-    embed.addFields({ name: `🎮 Mini Games`, value: `Only usable in <#${CONFIG.MINIGAMES_CHANNEL_ID || 'the minigames channel'}>\n\`/trivia\`  \`/coinflip\`  \`/roll\`  \`/rps\`  \`/8ball\`` });
+    // General — everyone
+    embed.addFields({
+      name: '🌐 General',
+      value: [
+        '`/ping` — Check bot latency',
+        '`/help` — Show this menu',
+        '`/level` — Check your XP and level',
+        '`/leaderboard` — Top 10 XP rankings',
+        '`/daily` — Claim your daily +100 XP',
+        '`/ticket` — Open a support ticket',
+        '`/ai` — Ask the AI anything',
+        '`/clear` — Delete your own messages',
+      ].join('\n'),
+      inline: false,
+    });
 
+    // Community — everyone
+    embed.addFields({
+      name: '💬 Community',
+      value: [
+        '`/idea` — Submit an idea to ' + (CONFIG.IDEAS_CHANNEL_ID ? `<#${CONFIG.IDEAS_CHANNEL_ID}>` : '#ideas'),
+        '`/submit` — Submit your challenge solution',
+        '`/currentchallenge` — View the active code challenge',
+      ].join('\n'),
+      inline: false,
+    });
+
+    // Mini Games
+    embed.addFields({
+      name: '🎮 Mini Games',
+      value: [
+        'Only usable in ' + (CONFIG.MINIGAMES_CHANNEL_ID ? `<#${CONFIG.MINIGAMES_CHANNEL_ID}>` : '#mini-games'),
+        '`/trivia` `+25 XP` — Answer a dev trivia question',
+        '`/coinflip` `+10 XP` — Flip a coin',
+        '`/roll` `+15 XP` — Roll the dice',
+        '`/rps` `+10 XP` — Rock Paper Scissors',
+        '`/8ball` — Ask the magic 8-ball',
+      ].join('\n'),
+      inline: false,
+    });
+
+    // Moderation
     if (isMod || isAdmin) {
-      embed.addFields({ name: '🟡 Moderation', value: '`/warn` `/warnings` `/clearwarnings` `/mute` `/kick` `/ban` `/purge`' });
+      embed.addFields({
+        name: '🛡️ Moderation',
+        value: [
+          '`/warn` — Warn a user',
+          "`/warnings` — View a user's warnings",
+          "`/clearwarnings` — Clear a user's warnings",
+          '`/mute` — Timeout a user',
+          '`/kick` — Kick a user',
+          '`/ban` — Ban a user',
+          '`/purge` — Bulk delete messages',
+        ].join('\n'),
+        inline: false,
+      });
     }
+
+    // Admin
     if (isAdmin) {
-      embed.addFields({ name: '🔴 Admin', value: '`/lock` `/unlock` `/say` `/ticketpanel` `/reactionroles` `/autoroles` `/serverstats` `/setupstats` `/dmall` `/antilink` `/wordfilter` `/giveaway` `/reroll` `/poll`' });
+      embed.addFields({
+        name: '⚙️ Admin',
+        value: [
+          '`/lock` `/unlock` — Lock or unlock a channel',
+          '`/say` — Send a message as the bot',
+          '`/slowmode` — Set channel slowmode',
+          '`/ticketpanel` — Post the support ticket panel',
+          '`/verifypanel` — Post the verification panel',
+          '`/langpanel` — Post the language roles panel',
+          '`/autoroles` — Post the self-roles panel',
+          '`/reactionroles` — Post reaction roles',
+          '`/challengepanel` — Set up the weekly challenge channel',
+          '`/challenge` — Post a manual code challenge',
+          '`/wordfilter` — Manage the word filter',
+          '`/antilink` — Toggle anti-link mode',
+          '`/giveaway` `/reroll` — Start or reroll a giveaway',
+          '`/poll` — Create a poll',
+          '`/dmall` — DM all members',
+          '`/serverstats` — Post live server stats embed',
+          '`/setupstats` — Create voice channel counters',
+        ].join('\n'),
+        inline: false,
+      });
     }
 
     return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -1887,6 +2084,95 @@ React with 🎉 to enter!
     currentChallenge = { title, description, difficulty, xp: diff.xp, postedAt: Date.now(), messageId: msg.id, channelId: targetChannel.id, submissions: new Set() };
 
     return interaction.reply({ content: `✅ Challenge posted in ${targetChannel}!`, ephemeral: true });
+  }
+
+  // IDEAS LEADERBOARD
+  if (commandName === 'ideasleaderboard') {
+    const sorted = Object.entries(ideasData)
+      .filter(([, d]) => d.upvotes.size > 0 || d.downvotes.size > 0)
+      .sort(([, a], [, b]) => (b.upvotes.size - b.downvotes.size) - (a.upvotes.size - a.downvotes.size))
+      .slice(0, 10);
+
+    if (!sorted.length)
+      return interaction.reply({ content: '📭 No ideas have been voted on yet.', ephemeral: true });
+
+    const lines = await Promise.all(sorted.map(async ([msgId, d], i) => {
+      const author = await client.users.fetch(d.authorId).catch(() => null);
+      const net = d.upvotes.size - d.downvotes.size;
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `**${i + 1}.**`;
+      const content = d.content.length > 60 ? d.content.slice(0, 57) + '...' : d.content;
+      return `${medal} ${content}
+　✅ ${d.upvotes.size}  ❌ ${d.downvotes.size}  **Score: ${net > 0 ? '+' : ''}${net}** — ${author ? author.tag : 'Unknown'}`;
+    }));
+
+    const embed = new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle('💡 Ideas Leaderboard')
+      .setDescription(lines.join('\n\n'))
+      .setFooter({ text: `Top ${sorted.length} ideas by net votes` })
+      .setFooter({ text: `Top ${sorted.length} ideas by net votes` })
+      .setTimestamp();
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // CLEAR IDEAS LEADERBOARD
+  if (commandName === 'clearideas') {
+    if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
+      return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
+
+    const count = Object.keys(ideasData).length;
+    for (const key of Object.keys(ideasData)) delete ideasData[key];
+
+    const embed = new EmbedBuilder()
+      .setColor(0xed4245)
+      .setTitle('🗑️ Ideas Leaderboard Cleared')
+      .setDescription(`Cleared **${count}** idea${count !== 1 ? 's' : ''} from the leaderboard.`)
+      .setFooter({ text: `Cleared by ${interaction.user.tag}` })
+      .setTimestamp();
+
+    return interaction.reply({ embeds: [embed] });
+  }
+
+  // IDEA
+  if (commandName === 'idea') {
+    if (!CONFIG.IDEAS_CHANNEL_ID) return interaction.reply({ content: '❌ Ideas channel not configured.', ephemeral: true });
+    const ideasChannel = interaction.guild.channels.cache.get(CONFIG.IDEAS_CHANNEL_ID);
+    if (!ideasChannel) return interaction.reply({ content: '❌ Ideas channel not found.', ephemeral: true });
+
+    const ideaText = interaction.options.getString('idea');
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('💡 New Idea')
+      .setDescription(ideaText)
+      .setAuthor({ name: interaction.user.tag, iconURL: interaction.user.displayAvatarURL({ dynamic: true }) })
+      .addFields(
+        { name: '✅ Upvotes', value: '0', inline: true },
+        { name: '❌ Downvotes', value: '0', inline: true },
+        { name: '📊 Score', value: '0', inline: true }
+      )
+      .setFooter({ text: 'React with ✅ or ❌ to vote!' })
+      .setTimestamp();
+
+    const approveRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`idea_approve_MSGID`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`idea_reject_MSGID`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
+    );
+
+    const msg = await ideasChannel.send({ embeds: [embed], components: [approveRow] });
+    // Edit with real message ID in button customIds
+    await msg.edit({ components: [new ActionRowBuilder().addComponents(
+      new ButtonBuilder().setCustomId(`idea_approve_${msg.id}`).setLabel('✅ Approve').setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`idea_reject_${msg.id}`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
+    )] });
+
+    ideasData[msg.id] = { authorId: interaction.user.id, content: ideaText, upvotes: new Set(), downvotes: new Set(), promoted: false };
+
+    await msg.react('✅');
+    await msg.react('❌');
+
+    return interaction.reply({ content: '✅ Your idea has been submitted!', ephemeral: true });
   }
 
   // CURRENTCHALLENGE
