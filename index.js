@@ -720,9 +720,28 @@ client.on(Events.MessageCreate, async message => {
     for (let i = 1; i < chunks.length; i++) await message.channel.send(chunks[i]);
   }
 
+  // CHALLENGE CHANNEL — only /submit allowed, delete everything else
+  const effectiveChallengeChannel = challengePanelChannelId || CONFIG.CHALLENGE_CHANNEL_ID;
+  if (effectiveChallengeChannel && message.channel.id === effectiveChallengeChannel) {
+    if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
+      await message.delete().catch(() => {});
+      const warn = await message.channel.send(`🚫 ${message.author} This channel is read-only! Use \`/submit\` to send your solution.`);
+      setTimeout(() => warn.delete().catch(() => {}), 6000);
+      return;
+    }
+  }
+
   // SERVICES CHANNEL — user sends a request, forwarded to review channel
   if (CONFIG.SERVICES_CHANNEL_ID && message.channel.id === CONFIG.SERVICES_CHANNEL_ID) {
     if (message.content.startsWith('/')) return;
+
+    // Must have text or image
+    const hasText = message.content.trim().length > 0;
+    const hasImage = message.attachments.some(a => a.contentType?.startsWith('image/'));
+    if (!hasText && !hasImage) {
+      await message.delete().catch(() => {});
+      return;
+    }
 
     // Block if user already has a pending request
     if (pendingRequests[message.author.id]) {
@@ -743,7 +762,7 @@ client.on(Events.MessageCreate, async message => {
     const embed = new EmbedBuilder()
       .setColor(0xfee75c)
       .setTitle('📋 New Service Request')
-      .setDescription(message.content)
+      .setDescription(message.content.trim() || '*(image only)*')
       .addFields(
         { name: '👤 From', value: `${message.author} (${message.author.tag})`, inline: true },
         { name: '📅 Submitted', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
@@ -799,10 +818,19 @@ client.on(Events.MessageReactionRemove, async (reaction, user) => {
 });
 
 // ========== TICKET ==========
-async function openTicket(interaction) {
+const TICKET_TYPES = {
+  bug:      { label: '🐛 Bug Report',      color: 0xed4245, description: 'Report a bug or technical issue.' },
+  scammer:  { label: '🚨 Report Scammer',  color: 0xff6b6b, description: 'Report a scammer or fraud.' },
+  other:    { label: '❓ Other',            color: 0x5865f2, description: 'Any other issue or question.' },
+};
+
+async function openTicket(interaction, ticketType) {
   const guild = interaction.guild;
   const user = interaction.user;
   if (tickets[user.id]) return interaction.reply({ content: `❌ You already have an open ticket: <#${tickets[user.id]}>`, ephemeral: true });
+
+  const type = TICKET_TYPES[ticketType] || TICKET_TYPES['other'];
+
   const permOverwrites = [
     { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
     { id: user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages, PermissionsBitField.Flags.ReadMessageHistory] },
@@ -817,12 +845,14 @@ async function openTicket(interaction) {
     permissionOverwrites: permOverwrites,
   });
   tickets[user.id] = channel.id;
+
   const embed = new EmbedBuilder()
-    .setColor(0x57f287)
-    .setTitle('🎫 Support Ticket')
-    .setDescription(`Hello ${user}! Support will be with you shortly.\n\nPlease describe your issue below.\n\nClick **Close Ticket** to close this ticket.`)
+    .setColor(type.color)
+    .setTitle(`${type.label}`)
+    .setDescription(`Hello ${user}! Support will be with you shortly.\n\n**Category:** ${type.label}\n\nPlease describe your issue below.\n\nClick **Close Ticket** when done.`)
     .setFooter({ text: `Ticket opened by ${user.tag}` })
     .setTimestamp();
+
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('close_ticket').setLabel('🔒 Close Ticket').setStyle(ButtonStyle.Danger)
   );
@@ -863,6 +893,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
   // SELECT MENUS
   if (interaction.isStringSelectMenu()) {
+    if (interaction.customId === 'ticket_type_select') {
+      const ticketType = interaction.values[0];
+      return openTicket(interaction, ticketType);
+    }
+
+
     if (interaction.customId.startsWith('lang_select_')) {
       await interaction.deferReply({ ephemeral: true });
       const selectedIds = interaction.values;
@@ -942,7 +978,7 @@ client.on(Events.InteractionCreate, async interaction => {
       return interaction.showModal(modal);
     }
 
-    if (interaction.customId === 'open_ticket') return openTicket(interaction);
+    if (interaction.customId === 'open_ticket') return openTicket(interaction, 'other');
     if (interaction.customId === 'close_ticket') {
       const channel = interaction.channel;
       await interaction.reply({ content: '🔒 Closing ticket in 5 seconds...' });
@@ -1232,18 +1268,30 @@ client.on(Events.InteractionCreate, async interaction => {
   }
 
   // TICKET
-  if (commandName === 'ticket') return openTicket(interaction);
+  if (commandName === 'ticket') return openTicket(interaction, 'other');
 
   // TICKET PANEL
   if (commandName === 'ticketpanel') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-    const embed = new EmbedBuilder().setColor(0x5865f2).setTitle('🎫 Support Tickets')
-      .setDescription('Need help? Click the button below to open a **private support ticket**.')
-      .setFooter({ text: interaction.guild.name }).setTimestamp();
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId('open_ticket').setLabel('📩 Open Ticket').setStyle(ButtonStyle.Primary)
-    );
+
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('🎫 Support Tickets')
+      .setDescription('Για άμεση εξυπηρέτηση, ανοίξτε ένα ticket επιλέγοντας την κατηγορία που σας αφορά από το παρακάτω μενού.')
+      .setFooter({ text: interaction.guild.name })
+      .setTimestamp();
+
+    const menu = new StringSelectMenuBuilder()
+      .setCustomId('ticket_type_select')
+      .setPlaceholder('📋 Select a Ticket Type')
+      .addOptions(
+        new StringSelectMenuOptionBuilder().setLabel('Bug Report').setValue('bug').setEmoji('🐛').setDescription('Report a bug or technical issue'),
+        new StringSelectMenuOptionBuilder().setLabel('Report Scammer').setValue('scammer').setEmoji('🚨').setDescription('Report a scammer or fraud'),
+        new StringSelectMenuOptionBuilder().setLabel('Other').setValue('other').setEmoji('❓').setDescription('Any other issue or question'),
+      );
+
+    const row = new ActionRowBuilder().addComponents(menu);
     await interaction.channel.send({ embeds: [embed], components: [row] });
     return interaction.reply({ content: '✅ Ticket panel sent!', ephemeral: true });
   }
