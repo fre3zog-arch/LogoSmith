@@ -776,19 +776,24 @@ client.on(Events.MessageCreate, async message => {
       .setTimestamp();
 
     // Grab image attachments if any
-    const imageAttachments = [...message.attachments.values()].filter(a => a.contentType?.startsWith('image/')).map(a => a.url);
+    const imageAttachments = [...message.attachments.values()].filter(a => a.contentType?.startsWith('image/'));
+    const imageUrls = imageAttachments.map(a => a.url);
 
-    // Set image on embed if present
-    if (imageAttachments.length > 0) embed.setImage(imageAttachments[0]);
-    if (imageAttachments.length > 1) embed.addFields({ name: '📎 Additional images', value: imageAttachments.slice(1).join('\n') });
-
+    // Set image on review embed using attachment (stays valid)
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`service_accept_${message.author.id}`).setLabel('✅ Accept').setStyle(ButtonStyle.Success),
       new ButtonBuilder().setCustomId(`service_reject_${message.author.id}`).setLabel('❌ Reject').setStyle(ButtonStyle.Danger),
     );
 
-    const reviewMsg = await reviewChannel.send({ embeds: [embed], components: [row] });
-    pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content, images: imageAttachments };
+    // Attach first image directly so it never expires in review
+    const reviewFiles = imageAttachments.length > 0 ? [{ attachment: imageAttachments[0].url, name: 'image.png' }] : [];
+    if (imageAttachments.length > 0) embed.setImage('attachment://image.png');
+    if (imageUrls.length > 1) embed.addFields({ name: '📎 Additional images', value: imageUrls.slice(1).join('\n') });
+
+    const reviewMsg = await reviewChannel.send({ embeds: [embed], files: reviewFiles, components: [row] });
+    // Store proxy URLs (more stable than CDN URLs)
+    const stableImages = imageAttachments.map(a => a.proxyURL || a.url);
+    pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content, images: stableImages };
 
     const notify = await message.channel.send(`📬 ${message.author} Your request has been received and is under review. We'll get back to you soon.`);
     setTimeout(() => notify.delete().catch(() => {}), 8000);
@@ -1018,12 +1023,16 @@ client.on(Events.InteractionCreate, async interaction => {
           const announceEmbed = new EmbedBuilder()
             .setColor(0x5865f2)
             .setAuthor({ name: targetUser ? targetUser.tag : targetUserId, iconURL: targetUser ? targetUser.displayAvatarURL({ dynamic: true }) : undefined })
-            .setDescription(requestContent || null)
+            .setDescription(requestContent !== '*(content unavailable)*' ? requestContent : null)
             .setFooter({ text: 'Service Request' })
             .setTimestamp();
-          if (savedImages.length > 0) announceEmbed.setImage(savedImages[0]);
+          const announceFiles = [];
+          if (savedImages.length > 0) {
+            announceFiles.push({ attachment: savedImages[0], name: 'image.png' });
+            announceEmbed.setImage('attachment://image.png');
+          }
           if (savedImages.length > 1) announceEmbed.addFields({ name: '📎 More images', value: savedImages.slice(1).join('\n') });
-          await servicesChannel.send({ embeds: [announceEmbed] }).catch(() => {});
+          await servicesChannel.send({ embeds: [announceEmbed], files: announceFiles }).catch(console.error);
         }
       }
 
@@ -1737,20 +1746,20 @@ React with 🎉 to enter!
 
     const embed = new EmbedBuilder()
       .setColor(diff.color)
-      .setTitle(`💻 Code Challenge — \${title}`)
+      .setTitle(`💻 Code Challenge — ${title}`)
       .setDescription(description)
       .addFields(
         { name: '⚡ Difficulty', value: diff.label, inline: true },
-        { name: '🏆 XP Reward', value: `+\${diff.xp} XP for submitting`, inline: true },
+        { name: '🏆 XP Reward', value: `+${diff.xp} XP for submitting`, inline: true },
         { name: '📤 How to submit', value: 'Use `/submit` with your solution!', inline: false }
       )
-      .setFooter({ text: `Posted by \${interaction.user.tag}` })
+      .setFooter({ text: `Posted by ${interaction.user.tag}` })
       .setTimestamp();
 
     const msg = await targetChannel.send({ embeds: [embed] });
     currentChallenge = { title, description, difficulty, xp: diff.xp, postedAt: Date.now(), messageId: msg.id, channelId: targetChannel.id, submissions: new Set() };
 
-    return interaction.reply({ content: `✅ Challenge posted in \${targetChannel}!`, ephemeral: true });
+    return interaction.reply({ content: `✅ Challenge posted in ${targetChannel}!`, ephemeral: true });
   }
 
   // CURRENTCHALLENGE
@@ -1765,13 +1774,13 @@ React with 🎉 to enter!
     const diff = difficultyMap[currentChallenge.difficulty];
     const embed = new EmbedBuilder()
       .setColor(diff.color)
-      .setTitle(`💻 Current Challenge — \${currentChallenge.title}`)
+      .setTitle(`💻 Current Challenge — ${currentChallenge.title}`)
       .setDescription(currentChallenge.description)
       .addFields(
         { name: '⚡ Difficulty', value: diff.label, inline: true },
-        { name: '🏆 XP Reward', value: `+\${currentChallenge.xp} XP`, inline: true },
-        { name: '👥 Submissions', value: `\${currentChallenge.submissions.size}`, inline: true },
-        { name: '📅 Posted', value: `<t:\${Math.floor(currentChallenge.postedAt / 1000)}:R>`, inline: true }
+        { name: '🏆 XP Reward', value: `+${currentChallenge.xp} XP`, inline: true },
+        { name: '👥 Submissions', value: `${currentChallenge.submissions.size}`, inline: true },
+        { name: '📅 Posted', value: `<t:${Math.floor(currentChallenge.postedAt / 1000)}:R>`, inline: true }
       )
       .setFooter({ text: 'Use /submit to send your solution!' });
     return interaction.reply({ embeds: [embed] });
@@ -1796,17 +1805,17 @@ React with 🎉 to enter!
       const embed = new EmbedBuilder()
         .setColor(0x5865f2)
         .setAuthor({ name: interaction.user.tag, iconURL: interaction.user.displayAvatarURL() })
-        .setTitle(`📤 Solution — \${currentChallenge.title}`)
-        .setDescription(`\`\`\`\n\${solution}\n\`\`\``)
-        .addFields({ name: '🏆 XP Earned', value: `+\${xpGain} XP\${alreadySubmitted ? ' (resubmission)' : ''}`, inline: true })
+        .setTitle(`📤 Solution — ${currentChallenge.title}`)
+        .setDescription(`\`\`\`\n${solution}\n\`\`\``)
+        .addFields({ name: '🏆 XP Earned', value: `+${xpGain} XP${alreadySubmitted ? ' (resubmission)' : ''}`, inline: true })
         .setTimestamp();
       await targetChannel.send({ embeds: [embed] });
     }
 
     let reply = alreadySubmitted
-      ? `📤 Updated your submission! **+\${xpGain} XP** (resubmission bonus).`
-      : `✅ Solution submitted! **+\${xpGain} XP**!`;
-    if (leveledUp !== null) reply += ` 🆙 Level up! **Level \${leveledUp}**!`;
+      ? `📤 Updated your submission! **+${xpGain} XP** (resubmission bonus).`
+      : `✅ Solution submitted! **+${xpGain} XP**!`;
+    if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
     return interaction.reply({ content: reply, ephemeral: true });
   }
 
