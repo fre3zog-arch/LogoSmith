@@ -76,6 +76,7 @@ const warns = {};
 const games = {};
 const pendingRequests = {}; // { userId: messageId } — tracks pending service requests
 const captchaCodes = {};   // { userId: { code, expires } }
+const serviceRatings = {}; // { messageId: { providerId, ratings: { userId: stars }, total, count } }
 let statsMessageId = null;
 
 // Giveaway, Poll, Daily, Word filter, Voice XP
@@ -130,12 +131,16 @@ const GAME_XP = {
 function getLevel(xp) { return Math.floor(0.1 * Math.sqrt(xp)); }
 function getXpForLevel(level) { return Math.pow(level / 0.1, 2); }
 
-function addXp(userId, amount) {
+function addXp(userId, amount, guild) {
   if (!levels[userId]) levels[userId] = { xp: 0, level: 0 };
   levels[userId].xp += amount;
   const newLevel = getLevel(levels[userId].xp);
   if (newLevel > levels[userId].level) {
     levels[userId].level = newLevel;
+    // Update rank role if guild is provided
+    if (guild) {
+      guild.members.fetch(userId).then(member => updateRankRole(member)).catch(() => {});
+    }
     return newLevel;
   }
   return null;
@@ -263,22 +268,67 @@ async function callGroq(prompt) {
 
 // ========== TRIVIA ==========
 const triviaQuestions = [
-  { q: 'What is the capital of France?', a: 'paris' },
-  { q: 'What is 7 × 8?', a: '56' },
-  { q: 'What planet is known as the Red Planet?', a: 'mars' },
-  { q: 'How many sides does a hexagon have?', a: '6' },
-  { q: 'What is the chemical symbol for water?', a: 'h2o' },
-  { q: 'What is the largest ocean on Earth?', a: 'pacific' },
-  { q: 'Who wrote Romeo and Juliet?', a: 'shakespeare' },
-  { q: 'What is the smallest prime number?', a: '2' },
-  { q: 'What year did World War II end?', a: '1945' },
-  { q: 'What is the powerhouse of the cell?', a: 'mitochondria' },
-  { q: 'How many continents are there on Earth?', a: '7' },
-  { q: 'What is the largest planet in our solar system?', a: 'jupiter' },
-  { q: 'What language has the most native speakers?', a: 'mandarin' },
-  { q: 'How many bones are in the human body?', a: '206' },
-  { q: 'What is the fastest land animal?', a: 'cheetah' },
+  { q: 'What does HTML stand for?', a: 'hypertext markup language' },
+  { q: 'Which language runs natively in the browser?', a: 'javascript' },
+  { q: 'What does CSS stand for?', a: 'cascading style sheets' },
+  { q: 'Which data structure uses LIFO order?', a: 'stack' },
+  { q: 'What does API stand for?', a: 'application programming interface' },
+  { q: 'What does HTTP stand for?', a: 'hypertext transfer protocol' },
+  { q: 'What symbol is used for comments in Python?', a: '#' },
+  { q: 'What does SQL stand for?', a: 'structured query language' },
+  { q: 'What is the result of 2 ** 10 in Python?', a: '1024' },
+  { q: 'Which keyword declares a constant in JavaScript?', a: 'const' },
+  { q: 'What does OOP stand for?', a: 'object oriented programming' },
+  { q: 'Which HTTP method is used to send data to a server?', a: 'post' },
+  { q: 'What does JSON stand for?', a: 'javascript object notation' },
+  { q: 'Which language is primarily used for iOS development?', a: 'swift' },
+  { q: 'What does DOM stand for?', a: 'document object model' },
+  { q: 'Which data structure uses FIFO order?', a: 'queue' },
+  { q: 'What does CLI stand for?', a: 'command line interface' },
+  { q: 'Which port does HTTPS use by default?', a: '443' },
+  { q: 'What is the base of the binary number system?', a: '2' },
+  { q: 'Which keyword is used to create a function in Python?', a: 'def' },
+  { q: 'What does RAM stand for?', a: 'random access memory' },
+  { q: 'Which company created the Java language?', a: 'sun microsystems' },
+  { q: 'What does IDE stand for?', a: 'integrated development environment' },
+  { q: 'What is the extension of a JavaScript file?', a: '.js' },
+  { q: 'What does Git stand for?', a: 'git' },
+  { q: 'Which HTTP status code means "Not Found"?', a: '404' },
+  { q: 'What does URL stand for?', a: 'uniform resource locator' },
+  { q: 'Which language was created by Brendan Eich in 10 days?', a: 'javascript' },
+  { q: 'What does MVC stand for?', a: 'model view controller' },
+  { q: 'Which symbol starts a comment in JavaScript?', a: '//' },
+  { q: 'What is the main use of Docker?', a: 'containerization' },
+  { q: 'What does SSH stand for?', a: 'secure shell' },
+  { q: 'What is 0xFF in decimal?', a: '255' },
+  { q: 'Which keyword exits a loop early in most languages?', a: 'break' },
+  { q: 'What does NPM stand for?', a: 'node package manager' },
 ];
+
+// ========== RANK ROLES (auto-assigned by level) ==========
+const RANK_ROLES = [
+  { minLevel: 0,  maxLevel: 4,  name: 'Noob Dev',   roleId: process.env.RANK_ROLE_NOOB   || '' },
+  { minLevel: 5,  maxLevel: 19, name: 'Pro Dev',     roleId: process.env.RANK_ROLE_PRO    || '' },
+  { minLevel: 20, maxLevel: Infinity, name: 'Hacker Dev', roleId: process.env.RANK_ROLE_HACKER || '' },
+];
+
+async function updateRankRole(member) {
+  if (!member) return;
+  const data = levels[member.id];
+  if (!data) return;
+  const currentLevel = data.level;
+  const targetRank = RANK_ROLES.find(r => currentLevel >= r.minLevel && currentLevel <= r.maxLevel);
+  if (!targetRank || !targetRank.roleId) return;
+  const targetRole = member.guild.roles.cache.get(targetRank.roleId);
+  if (!targetRole) return;
+  // Remove all other rank roles, add correct one
+  const rankRoleIds = RANK_ROLES.map(r => r.roleId).filter(Boolean);
+  const toRemove = member.roles.cache.filter(r => rankRoleIds.includes(r.id) && r.id !== targetRank.roleId);
+  for (const [, role] of toRemove) await member.roles.remove(role).catch(() => {});
+  if (!member.roles.cache.has(targetRank.roleId)) {
+    await member.roles.add(targetRole).catch(() => {});
+  }
+}
 
 // ========== AUTO ROLES PANEL ==========
 async function buildAutoRolesPanel(guild) {
@@ -601,7 +651,7 @@ client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
       delete voiceJoinTime[userId];
       if (minutes >= 1) {
         const xpGain = Math.min(minutes * 3, 60); // 3 XP per minute, max 60 per session
-        const leveledUp = addXp(userId, xpGain);
+        const leveledUp = addXp(userId, xpGain, channel.guild);
         if (leveledUp !== null) {
           const guild = oldState.guild;
           const welcomeChannel = guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
@@ -691,7 +741,7 @@ client.on(Events.MessageCreate, async message => {
     if (message.content.toLowerCase().trim() === game.answer) {
       clearTimeout(game.timeout);
       delete games[message.channel.id];
-      const leveledUp = addXp(message.author.id, GAME_XP.trivia_correct);
+      const leveledUp = addXp(message.author.id, GAME_XP.trivia_correct, message.guild);
       let reply = `🎉 Correct! You earned **+${GAME_XP.trivia_correct} XP**!`;
       if (leveledUp !== null) reply += ` 🆙 Level up! You are now **Level ${leveledUp}**!`;
       return message.reply(reply);
@@ -703,7 +753,7 @@ client.on(Events.MessageCreate, async message => {
   if (!cooldowns[message.author.id] || now - cooldowns[message.author.id] >= 60000) {
     cooldowns[message.author.id] = now;
     const xpGain = Math.floor(Math.random() * 10) + 5;
-    const leveledUp = addXp(message.author.id, xpGain);
+    const leveledUp = addXp(message.author.id, xpGain, message.guild);
     if (leveledUp !== null) message.channel.send(`🎉 ${message.author} leveled up to **Level ${leveledUp}**!`);
   }
 
@@ -858,7 +908,7 @@ async function openTicket(interaction, ticketType) {
   const embed = new EmbedBuilder()
     .setColor(type.color)
     .setTitle(type.label)
-    .setDescription(`Hello ${user},\n\nThank you for reaching out. A staff member will be with you shortly.\n\n**Category:** ${type.label}\n**Opened:** <t:${Math.floor(Date.now()/1000)}:R>\n\nPlease describe your issue in detail below.`)
+    .setDescription(`Hello ${user},\n\nThank you for reaching out. A staff member will be with you shortly.\n\n**Category:** ${type.label}\n\nPlease describe your issue in detail below.`)
     .setFooter({ text: `Ticket • ${user.tag}`, iconURL: user.displayAvatarURL() })
     .setTimestamp();
 
@@ -902,6 +952,49 @@ client.on(Events.InteractionCreate, async interaction => {
 
   // SELECT MENUS
   if (interaction.isStringSelectMenu()) {
+    // SERVICE RATING
+    if (interaction.customId.startsWith('service_rate_') && !interaction.customId.includes('PLACEHOLDER')) {
+      const parts = interaction.customId.split('_'); // service_rate_MSGID_USERID
+      const msgId = parts[2];
+      const providerId = parts[3];
+      const stars = parseInt(interaction.values[0]);
+      const ratingData = serviceRatings[msgId];
+
+      if (!ratingData) return interaction.reply({ content: '❌ This rating has expired.', ephemeral: true });
+      if (interaction.user.id === providerId)
+        return interaction.reply({ content: '❌ You cannot rate your own service.', ephemeral: true });
+
+      const alreadyRated = ratingData.ratings[interaction.user.id];
+      if (alreadyRated) {
+        // Update existing rating
+        ratingData.total = ratingData.total - alreadyRated + stars;
+        ratingData.ratings[interaction.user.id] = stars;
+      } else {
+        ratingData.total += stars;
+        ratingData.count++;
+        ratingData.ratings[interaction.user.id] = stars;
+      }
+
+      const avg = ratingData.total / ratingData.count;
+      const fullStars = Math.round(avg);
+      const starBar = '⭐'.repeat(fullStars) + '✦'.repeat(Math.max(0, 5 - fullStars));
+      const ratingText = `${starBar}  **${avg.toFixed(1)} / 5.0** — ${ratingData.count} rating${ratingData.count !== 1 ? 's' : ''}`;
+
+      // Edit the message embed to update rating field
+      const msg = await interaction.message.fetch().catch(() => null);
+      if (msg) {
+        const oldEmbed = msg.embeds[0];
+        const newEmbed = EmbedBuilder.from(oldEmbed);
+        const fields = newEmbed.data.fields || [];
+        const ratingIdx = fields.findIndex(f => f.name === '⭐ Rating');
+        if (ratingIdx !== -1) fields[ratingIdx] = { name: '⭐ Rating', value: ratingText, inline: false };
+        else newEmbed.addFields({ name: '⭐ Rating', value: ratingText, inline: false });
+        await msg.edit({ embeds: [newEmbed] }).catch(() => {});
+      }
+
+      return interaction.reply({ content: `✅ You rated this service **${stars}/5** ${' ⭐'.repeat(stars).trim()}`, ephemeral: true });
+    }
+
     if (interaction.customId === 'ticket_type_select') {
       const ticketType = interaction.values[0];
       return openTicket(interaction, ticketType);
@@ -1026,13 +1119,45 @@ client.on(Events.InteractionCreate, async interaction => {
             .setDescription(requestContent !== '*(content unavailable)*' ? requestContent : null)
             .setFooter({ text: 'Service Request' })
             .setTimestamp();
+          // Rating field placeholder
+          announceEmbed.addFields({ name: '⭐ Rating', value: 'No ratings yet', inline: false });
+
+          const ratingMenu = new StringSelectMenuBuilder()
+            .setCustomId('service_rate_PLACEHOLDER')
+            .setPlaceholder('⭐ Rate this service...')
+            .addOptions(
+              new StringSelectMenuOptionBuilder().setLabel('⭐ 1 Star').setValue('1').setDescription('Poor'),
+              new StringSelectMenuOptionBuilder().setLabel('⭐⭐ 2 Stars').setValue('2').setDescription('Below average'),
+              new StringSelectMenuOptionBuilder().setLabel('⭐⭐⭐ 3 Stars').setValue('3').setDescription('Average'),
+              new StringSelectMenuOptionBuilder().setLabel('⭐⭐⭐⭐ 4 Stars').setValue('4').setDescription('Good'),
+              new StringSelectMenuOptionBuilder().setLabel('⭐⭐⭐⭐⭐ 5 Stars').setValue('5').setDescription('Excellent!'),
+            );
+          const ratingRow = new ActionRowBuilder().addComponents(ratingMenu);
+
           const announceFiles = [];
           if (savedImages.length > 0) {
             announceFiles.push({ attachment: savedImages[0], name: 'image.png' });
             announceEmbed.setImage('attachment://image.png');
           }
           if (savedImages.length > 1) announceEmbed.addFields({ name: '📎 More images', value: savedImages.slice(1).join('\n') });
-          await servicesChannel.send({ embeds: [announceEmbed], files: announceFiles }).catch(console.error);
+
+          const announceMsg = await servicesChannel.send({ embeds: [announceEmbed], files: announceFiles, components: [ratingRow] }).catch(console.error);
+
+          // Now edit to set real customId with message ID
+          if (announceMsg) {
+            const realMenu = new StringSelectMenuBuilder()
+              .setCustomId(`service_rate_${announceMsg.id}_${targetUserId}`)
+              .setPlaceholder('⭐ Rate this service...')
+              .addOptions(
+                new StringSelectMenuOptionBuilder().setLabel('⭐ 1 Star').setValue('1').setDescription('Poor'),
+                new StringSelectMenuOptionBuilder().setLabel('⭐⭐ 2 Stars').setValue('2').setDescription('Below average'),
+                new StringSelectMenuOptionBuilder().setLabel('⭐⭐⭐ 3 Stars').setValue('3').setDescription('Average'),
+                new StringSelectMenuOptionBuilder().setLabel('⭐⭐⭐⭐ 4 Stars').setValue('4').setDescription('Good'),
+                new StringSelectMenuOptionBuilder().setLabel('⭐⭐⭐⭐⭐ 5 Stars').setValue('5').setDescription('Excellent!'),
+              );
+            await announceMsg.edit({ components: [new ActionRowBuilder().addComponents(realMenu)] }).catch(() => {});
+            serviceRatings[announceMsg.id] = { providerId: targetUserId, ratings: {}, total: 0, count: 0 };
+          }
         }
       }
 
@@ -1466,7 +1591,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const won = guess === result;
     let reply = `🪙 The coin landed on **${result}**! You ${won ? `**won** 🎉 +**${GAME_XP.coinflip_win} XP**` : '**lost** 😔'}!`;
     if (won) {
-      const leveledUp = addXp(interaction.user.id, GAME_XP.coinflip_win);
+      const leveledUp = addXp(interaction.user.id, GAME_XP.coinflip_win, interaction.guild);
       if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
     }
     return interaction.reply(reply);
@@ -1480,7 +1605,7 @@ client.on(Events.InteractionCreate, async interaction => {
     const isMax = result === sides;
     let reply = `🎲 You rolled a **${result}** (d${sides})!`;
     if (isMax) {
-      const leveledUp = addXp(interaction.user.id, GAME_XP.roll_lucky);
+      const leveledUp = addXp(interaction.user.id, GAME_XP.roll_lucky, interaction.guild);
       reply += ` 🎯 Lucky roll! **+${GAME_XP.roll_lucky} XP**!`;
       if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
     }
@@ -1499,7 +1624,7 @@ client.on(Events.InteractionCreate, async interaction => {
     else outcome = 'lose';
     let reply = `${emojis[player]} vs ${emojis[bot]} — `;
     if (outcome === 'win') {
-      const leveledUp = addXp(interaction.user.id, GAME_XP.rps_win);
+      const leveledUp = addXp(interaction.user.id, GAME_XP.rps_win, interaction.guild);
       reply += `You **win**! 🎉 **+${GAME_XP.rps_win} XP**!`;
       if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
     } else if (outcome === 'lose') {
@@ -1555,7 +1680,7 @@ client.on(Events.InteractionCreate, async interaction => {
     }
     dailyCooldowns[interaction.user.id] = now;
     const xp = 100;
-    const leveledUp = addXp(interaction.user.id, xp);
+    const leveledUp = addXp(interaction.user.id, xp, interaction.guild);
     let reply = `🎁 Daily reward claimed! **+${xp} XP**!`;
     if (leveledUp !== null) reply += ` 🆙 You leveled up to **Level ${leveledUp}**!`;
     return interaction.reply(reply);
@@ -1790,33 +1915,79 @@ React with 🎉 to enter!
   if (commandName === 'submit') {
     if (!currentChallenge) return interaction.reply({ content: '❌ There is no active challenge right now.', ephemeral: true });
     const solution = interaction.options.getString('solution');
-    const alreadySubmitted = currentChallenge.submissions.has(interaction.user.id);
 
+    // Defer because AI evaluation takes a moment
+    await interaction.deferReply({ ephemeral: true });
+
+    // AI evaluation via Groq
+    let isCorrect = false;
+    let feedback = 'Could not evaluate — XP not awarded.';
+
+    if (CONFIG.GROQ_API_KEY) {
+      try {
+        const evalRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${CONFIG.GROQ_API_KEY}` },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
+            max_tokens: 200,
+            messages: [
+              {
+                role: 'system',
+                content: 'You are a strict code reviewer. Evaluate if the submitted solution correctly solves the given challenge. Reply ONLY in this exact JSON format: {"correct": true/false, "feedback": "one sentence explanation"}. Be strict — if the solution is clearly wrong, incomplete, off-topic, or nonsense, mark it as incorrect.'
+              },
+              {
+                role: 'user',
+                content: `Challenge: ${currentChallenge.title}\nDescription: ${currentChallenge.description}\n\nSubmitted solution:\n${solution}`
+              }
+            ]
+          })
+        });
+        const evalData = await evalRes.json();
+        const raw = evalData.choices?.[0]?.message?.content?.trim() || '{}';
+        const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+        isCorrect = parsed.correct === true;
+        feedback = parsed.feedback || feedback;
+      } catch (e) {
+        console.error('AI eval error:', e);
+        feedback = 'Evaluation failed — please try again.';
+      }
+    }
+
+    if (!isCorrect) {
+      return interaction.editReply({ content: `❌ **Incorrect solution.**\n\n> ${feedback}\n\nTry again — no XP awarded.` });
+    }
+
+    // Correct — award XP
+    const alreadySubmitted = currentChallenge.submissions.has(interaction.user.id);
     currentChallenge.submissions.add(interaction.user.id);
     const xpGain = alreadySubmitted ? Math.floor(currentChallenge.xp * 0.25) : currentChallenge.xp;
-    const leveledUp = addXp(interaction.user.id, xpGain);
+    const leveledUp = addXp(interaction.user.id, xpGain, interaction.guild);
 
-    // Post submission to challenge channel
+    // Post to challenge channel
     const targetChannel = CONFIG.CHALLENGE_CHANNEL_ID
       ? interaction.guild.channels.cache.get(CONFIG.CHALLENGE_CHANNEL_ID)
       : interaction.channel;
 
     if (targetChannel) {
       const embed = new EmbedBuilder()
-        .setColor(0x5865f2)
+        .setColor(0x57f287)
         .setAuthor({ name: interaction.user.tag, iconURL: interaction.user.displayAvatarURL() })
-        .setTitle(`📤 Solution — ${currentChallenge.title}`)
+        .setTitle(`✅ Solution — ${currentChallenge.title}`)
         .setDescription(`\`\`\`\n${solution}\n\`\`\``)
-        .addFields({ name: '🏆 XP Earned', value: `+${xpGain} XP${alreadySubmitted ? ' (resubmission)' : ''}`, inline: true })
+        .addFields(
+          { name: '🏆 XP Earned', value: `+${xpGain} XP${alreadySubmitted ? ' (resubmission)' : ''}`, inline: true },
+          { name: '💬 Review', value: feedback, inline: false }
+        )
         .setTimestamp();
       await targetChannel.send({ embeds: [embed] });
     }
 
     let reply = alreadySubmitted
-      ? `📤 Updated your submission! **+${xpGain} XP** (resubmission bonus).`
-      : `✅ Solution submitted! **+${xpGain} XP**!`;
-    if (leveledUp !== null) reply += ` 🆙 Level up! **Level ${leveledUp}**!`;
-    return interaction.reply({ content: reply, ephemeral: true });
+      ? `📤 Updated solution accepted! **+${xpGain} XP** (resubmission bonus).\n\n> ${feedback}`
+      : `✅ Correct solution! **+${xpGain} XP** awarded!\n\n> ${feedback}`;
+    if (leveledUp !== null) reply += `\n\n🆙 **Level up! You are now Level ${leveledUp}!**`;
+    return interaction.editReply({ content: reply });
   }
 
   // LANGPANEL
