@@ -148,12 +148,13 @@ async function modLog(action, target, moderator, reason, extra = '') {
   const colors = { BAN: 0xed4245, KICK: 0xfee75c, MUTE: 0xeb459e, WARN: 0xff9500, LOCK: 0xff6b6b, UNLOCK: 0x57f287, 'ANTI-SPAM': 0xff6b6b, 'ANTI-LINK': 0xff6b6b, 'ANTI-ALT': 0xff6b6b };
   const embed = new EmbedBuilder()
     .setColor(colors[action] || 0x5865f2)
-    .setTitle(`🔨 ${action}`)
+    .setTitle(`${action}`)
     .addFields(
-      { name: 'Target', value: `${target.tag || target} (${target.id || target})`, inline: true },
+      { name: 'User', value: `${target.tag || target}\n\`${target.id || target}\``, inline: true },
       { name: 'Moderator', value: moderator ? `${moderator.tag}` : 'AutoMod', inline: true },
-      { name: 'Reason', value: reason || 'No reason provided' }
+      { name: 'Reason', value: reason || 'No reason provided', inline: false }
     )
+    .setFooter({ text: 'Mod Log' })
     .setTimestamp();
   if (extra) embed.addFields({ name: 'Details', value: extra });
   channel.send({ embeds: [embed] }).catch(() => {});
@@ -629,9 +630,11 @@ client.on(Events.GuildMemberAdd, async member => {
     if (channel) {
       const embed = new EmbedBuilder()
         .setColor(0x5865f2)
-        .setTitle('👋 Welcome!')
-        .setDescription(`Welcome ${member} to **${member.guild.name}**!\nYou are member **#${member.guild.memberCount}**.`)
-        .setThumbnail(member.user.displayAvatarURL())
+        .setTitle('Welcome to ' + member.guild.name + '! 👋')
+        .setDescription(`Hey ${member}, great to have you here!\n\nYou are member **#${member.guild.memberCount}**. Make yourself at home and enjoy the community.`)
+        .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
+        .setImage('https://i.imgur.com/wSTFkRM.png')
+        .setFooter({ text: member.guild.name + ' • Welcome', iconURL: member.guild.iconURL({ dynamic: true }) })
         .setTimestamp();
       channel.send({ embeds: [embed] });
     }
@@ -725,7 +728,7 @@ client.on(Events.MessageCreate, async message => {
   if (effectiveChallengeChannel && message.channel.id === effectiveChallengeChannel) {
     if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
       await message.delete().catch(() => {});
-      const warn = await message.channel.send(`🚫 ${message.author} This channel is read-only! Use \`/submit\` to send your solution.`);
+      const warn = await message.channel.send(`🚫 ${message.author} This channel is read-only — use \`/submit\` to submit your solution.`);
       setTimeout(() => warn.delete().catch(() => {}), 6000);
       return;
     }
@@ -746,7 +749,7 @@ client.on(Events.MessageCreate, async message => {
     // Block if user already has a pending request
     if (pendingRequests[message.author.id]) {
       await message.delete().catch(() => {});
-      const warn = await message.channel.send(`❌ ${message.author} You already have a **pending request**. Wait for an admin to review it before submitting a new one.`);
+      const warn = await message.channel.send(`❌ ${message.author} You already have a pending request. Please wait for a response before submitting a new one.`);
       setTimeout(() => warn.delete().catch(() => {}), 7000);
       return;
     }
@@ -761,14 +764,15 @@ client.on(Events.MessageCreate, async message => {
 
     const embed = new EmbedBuilder()
       .setColor(0xfee75c)
+      .setAuthor({ name: message.author.tag, iconURL: message.author.displayAvatarURL({ dynamic: true }) })
       .setTitle('📋 New Service Request')
-      .setDescription(message.content.trim() || '*(image only)*')
+      .setDescription(message.content.trim() || '*[Image only — see below]*')
       .addFields(
-        { name: '👤 From', value: `${message.author} (${message.author.tag})`, inline: true },
-        { name: '📅 Submitted', value: `<t:${Math.floor(Date.now() / 1000)}:R>`, inline: true }
+        { name: '👤 User', value: `${message.author} (\`${message.author.tag}\`)`, inline: true },
+        { name: '🆔 User ID', value: `\`${message.author.id}\``, inline: true },
+        { name: '📅 Submitted', value: `<t:${Math.floor(Date.now() / 1000)}:F>`, inline: false }
       )
-      .setThumbnail(message.author.displayAvatarURL())
-      .setFooter({ text: `User ID: ${message.author.id}` })
+      .setFooter({ text: 'Service Request • Pending Review' })
       .setTimestamp();
 
     // Grab image attachments if any
@@ -786,7 +790,7 @@ client.on(Events.MessageCreate, async message => {
     const reviewMsg = await reviewChannel.send({ embeds: [embed], components: [row] });
     pendingRequests[message.author.id] = { msgId: reviewMsg.id, content: message.content, images: imageAttachments };
 
-    const notify = await message.channel.send(`📬 ${message.author} Your request has been submitted! An admin will review it shortly.`);
+    const notify = await message.channel.send(`📬 ${message.author} Your request has been received and is under review. We'll get back to you soon.`);
     setTimeout(() => notify.delete().catch(() => {}), 8000);
   }
 
@@ -848,9 +852,9 @@ async function openTicket(interaction, ticketType) {
 
   const embed = new EmbedBuilder()
     .setColor(type.color)
-    .setTitle(`${type.label}`)
-    .setDescription(`Hello ${user}! Support will be with you shortly.\n\n**Category:** ${type.label}\n\nPlease describe your issue below.\n\nClick **Close Ticket** when done.`)
-    .setFooter({ text: `Ticket opened by ${user.tag}` })
+    .setTitle(type.label)
+    .setDescription(`Hello ${user},\n\nThank you for reaching out. A staff member will be with you shortly.\n\n**Category:** ${type.label}\n**Opened:** <t:${Math.floor(Date.now()/1000)}:R>\n\nPlease describe your issue in detail below.`)
+    .setFooter({ text: `Ticket • ${user.tag}`, iconURL: user.displayAvatarURL() })
     .setTimestamp();
 
   const row = new ActionRowBuilder().addComponents(
@@ -924,7 +928,7 @@ client.on(Events.InteractionCreate, async interaction => {
       }
 
       if (selectedIds.length === 0)
-        return interaction.editReply('ℹ️ No languages selected. Your roles were not changed.');
+        return interaction.editReply('ℹ️ No languages selected — your roles remain unchanged.');
 
       const lines = [];
       if (added.length) lines.push(`✅ **Added:** ${added.join(', ')}`);
@@ -1012,9 +1016,10 @@ client.on(Events.InteractionCreate, async interaction => {
           const requestContent = pendingRequests[targetUserId]?.content || '*(content unavailable)*';
           const savedImages = pendingRequests[targetUserId]?.images || [];
           const announceEmbed = new EmbedBuilder()
-            .setColor(0xffffff)
-            .setAuthor({ name: targetUser ? targetUser.tag : targetUserId, iconURL: targetUser ? targetUser.displayAvatarURL() : undefined })
+            .setColor(0x5865f2)
+            .setAuthor({ name: targetUser ? targetUser.tag : targetUserId, iconURL: targetUser ? targetUser.displayAvatarURL({ dynamic: true }) : undefined })
             .setDescription(requestContent || null)
+            .setFooter({ text: 'Service Request' })
             .setTimestamp();
           if (savedImages.length > 0) announceEmbed.setImage(savedImages[0]);
           if (savedImages.length > 1) announceEmbed.addFields({ name: '📎 More images', value: savedImages.slice(1).join('\n') });
@@ -1029,10 +1034,12 @@ client.on(Events.InteractionCreate, async interaction => {
       if (targetUser) {
         const dmEmbed = new EmbedBuilder()
           .setColor(isAccept ? 0x57f287 : 0xed4245)
-          .setTitle(isAccept ? '✅ Service Request Accepted' : '❌ Service Request Rejected')
+          .setTitle(isAccept ? '✅ Request Accepted' : '❌ Request Rejected')
           .setDescription(isAccept
-            ? `Your service request in **${interaction.guild.name}** has been **accepted**! An admin will reach out to you shortly.`
-            : `Your service request in **${interaction.guild.name}** has been **rejected**. Feel free to submit a new one.`)
+            ? `Your service request in **${interaction.guild.name}** has been **accepted**.\n\nA staff member will reach out to you shortly.`
+            : `Your service request in **${interaction.guild.name}** has been **declined** this time.\n\nYou're welcome to submit a new request at any time.`)
+          .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
+          .setFooter({ text: interaction.guild.name })
           .setTimestamp();
         await targetUser.send({ embeds: [dmEmbed] }).catch(() => {});
       }
@@ -1066,7 +1073,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
       // If nothing selected (user cleared the menu), do nothing
       if (selectedIds.length === 0) {
-        return interaction.editReply('ℹ️ No languages selected. Your roles were not changed.');
+        return interaction.editReply('ℹ️ No languages selected — your roles remain unchanged.');
       }
 
       const lines = [];
@@ -1250,11 +1257,22 @@ client.on(Events.InteractionCreate, async interaction => {
     const target = interaction.options.getUser('user') || interaction.user;
     const data = levels[target.id] || { xp: 0, level: 0 };
     const nextXp = Math.floor(getXpForLevel(data.level + 1));
-    const embed = new EmbedBuilder().setColor(0xfee75c).setTitle(`📊 Level — ${target.username}`)
+    const xpProgress = data.xp - Math.floor(getXpForLevel(data.level));
+    const xpNeeded = nextXp - Math.floor(getXpForLevel(data.level));
+    const bars = 12;
+    const filled = Math.round((xpProgress / xpNeeded) * bars);
+    const progressBar = '█'.repeat(Math.max(0, filled)) + '░'.repeat(Math.max(0, bars - filled));
+    const embed = new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setAuthor({ name: target.tag, iconURL: target.displayAvatarURL({ dynamic: true }) })
+      .setTitle('📊 Level Card')
       .addFields(
-        { name: 'Level', value: `${data.level}`, inline: true },
-        { name: 'XP', value: `${data.xp} / ${nextXp}`, inline: true }
-      ).setThumbnail(target.displayAvatarURL());
+        { name: '⭐ Level', value: `**${data.level}**`, inline: true },
+        { name: '✨ Total XP', value: `**${data.xp}**`, inline: true },
+        { name: '📈 Progress', value: `\`${progressBar}\` ${xpProgress}/${xpNeeded} XP`, inline: false }
+      )
+      .setThumbnail(target.displayAvatarURL({ dynamic: true, size: 256 }))
+      .setFooter({ text: 'Next level: ' + (data.level + 1) });
     return interaction.reply({ embeds: [embed] });
   }
 
@@ -1277,9 +1295,9 @@ client.on(Events.InteractionCreate, async interaction => {
 
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
-      .setTitle('🎫 Support Tickets')
-      .setDescription('Για άμεση εξυπηρέτηση, ανοίξτε ένα ticket επιλέγοντας την κατηγορία που σας αφορά από το παρακάτω μενού.')
-      .setFooter({ text: interaction.guild.name })
+      .setTitle('🎫 Support Center')
+      .setDescription('Need assistance? Select a category below to open a **private ticket**. Our team typically responds within a few hours.\n\n> 🐛 **Bug Report** — Technical issues\n> 🚨 **Report Scammer** — Fraud or scam reports\n> ❓ **Other** — Anything else')
+      .setFooter({ text: interaction.guild.name + ' • Support', iconURL: interaction.guild.iconURL({ dynamic: true }) })
       .setTimestamp();
 
     const menu = new StringSelectMenuBuilder()
@@ -1502,8 +1520,8 @@ client.on(Events.InteractionCreate, async interaction => {
       .setFooter({ text: 'Showing commands available to you' })
       .setTimestamp();
 
-    embed.addFields({ name: '🟢 General', value: '`/ping` `/level` `/leaderboard` `/ticket` `/ai` `/clear` `/daily` `/help`' });
-    embed.addFields({ name: `🎮 Mini Games (only in <#${CONFIG.MINIGAMES_CHANNEL_ID || 'minigames'}>)`, value: '`/trivia` `/coinflip` `/roll` `/rps` `/8ball`' });
+    embed.addFields({ name: '🟢 General', value: '`/ping`  `/level`  `/leaderboard`  `/ticket`  `/ai`  `/clear`  `/daily`  `/help`' });
+    embed.addFields({ name: `🎮 Mini Games`, value: `Only usable in <#${CONFIG.MINIGAMES_CHANNEL_ID || 'the minigames channel'}>\n\`/trivia\`  \`/coinflip\`  \`/roll\`  \`/rps\`  \`/8ball\`` });
 
     if (isMod || isAdmin) {
       embed.addFields({ name: '🟡 Moderation', value: '`/warn` `/warnings` `/clearwarnings` `/mute` `/kick` `/ban` `/purge`' });
@@ -1614,8 +1632,8 @@ React with 🎉 to enter!
     const embed = new EmbedBuilder()
       .setColor(0x5865f2)
       .setTitle(`📊 ${question}`)
-      .setDescription(desc)
-      .setFooter({ text: `Poll by ${interaction.user.tag}` })
+      .setDescription(desc + '\n\nReact with the corresponding number to cast your vote!')
+      .setFooter({ text: 'Poll by ' + interaction.user.tag, iconURL: interaction.user.displayAvatarURL() })
       .setTimestamp();
     const pollMsg = await interaction.channel.send({ embeds: [embed] });
     for (let i = 0; i < rawOptions.length; i++) await pollMsg.react(numberEmojis[i]).catch(() => {});
@@ -1658,14 +1676,16 @@ React with 🎉 to enter!
 
     const embed = new EmbedBuilder()
       .setColor(0x57f287)
-      .setTitle('✅ Server Verification')
+      .setTitle('Human Verification')
       .setDescription(
         `Welcome to **${interaction.guild.name}**!\n\n` +
-        `To gain access to the server, please click the **Verify** button below.\n\n` +
-        `By verifying, you confirm that you have read and agree to our server rules.`
+        `To gain full access, click **Verify** below and complete a quick math captcha.\n\n` +
+        `> ✅ Takes less than 10 seconds\n` +
+        `> 🔒 Keeps the server safe from bots\n` +
+        `> 📋 By verifying you agree to our server rules`
       )
-      .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
-      .setFooter({ text: interaction.guild.name })
+      .setThumbnail(interaction.guild.iconURL({ dynamic: true, size: 256 }))
+      .setFooter({ text: interaction.guild.name + ' • Verification System', iconURL: interaction.guild.iconURL({ dynamic: true }) })
       .setTimestamp();
 
     const row = new ActionRowBuilder().addComponents(
@@ -1689,7 +1709,7 @@ React with 🎉 to enter!
 
     await postAutoChallenge(interaction.guild);
 
-    return interaction.reply({ content: `✅ Challenge panel set in ${interaction.channel}! A new challenge will be posted automatically every **week**.`, ephemeral: true });
+    return interaction.reply({ content: `✅ Challenge panel set in ${interaction.channel}! A new challenge will automatically be posted every week.`, ephemeral: true });
   }
 
   // CHALLENGE (Admin posts a new challenge)
