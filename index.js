@@ -1518,10 +1518,10 @@ client.on(Events.InteractionCreate, async interaction => {
   if (commandName === 'ticketpanel') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-
-    const embed = new EmbedBuilder()
-      .setColor(0x5865f2)
-      .setTitle('🎫 Support Center')
+ const embed = new EmbedBuilder()
+      .setColor(0xFFFFFF)
+      .setAuthor({ name: '🎫 Support Center', iconURL: getLogoUrl() })
+      .setThumbnail(getLogoUrl())
       .setDescription('Need assistance? Select a category below to open a **private ticket**. Our team typically responds within a few hours.\n\n> 🐛 **Bug Report** — Technical issues\n> 🚨 **Report Scammer** — Fraud or scam reports\n> ❓ **Other** — Anything else')
       .setFooter({ text: interaction.guild.name + ' • Support', iconURL: interaction.guild.iconURL({ dynamic: true }) })
       .setTimestamp();
