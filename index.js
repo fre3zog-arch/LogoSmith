@@ -1518,18 +1518,14 @@ client.on(Events.InteractionCreate, async interaction => {
   if (commandName === 'ticketpanel') {
     if (!interaction.member.permissions.has(PermissionsBitField.Flags.Administrator))
       return interaction.reply({ content: '❌ Admin only.', ephemeral: true });
-
     await interaction.deferReply({ ephemeral: true });
-
     const botAvatar = client.user.displayAvatarURL({ size: 512 });
-
     const embed = new EmbedBuilder()
       .setColor(0xFFFFFF)
-      .setAuthor({ name: '🎫 Support Center', iconURL: botAvatar })
+      .setAuthor({ name: 'NextCode™', iconURL: botAvatar })
       .setThumbnail(botAvatar)
-      .setDescription('Need assistance? Select a category below to open a **private ticket**. Our team typically responds within a few hours.\n\n> 🐛 **Bug Report** — Technical issues\n> 🚨 **Report Scammer** — Fraud or scam reports\n> ❓ **Other** — Anything else')
-      .setTimestamp();
-
+      .setTitle('🎫 Support Center')
+      .setDescription('Need assistance? Select a category below to open a **private ticket**. Our team typically responds within a few hours.\n\n> 🐛 **Bug Report** — Technical issues\n> 🚨 **Report Scammer** — Fraud or scam reports\n> ❓ **Other** — Anything else');
     const menu = new StringSelectMenuBuilder()
       .setCustomId('ticket_type_select')
       .setPlaceholder('📋 Select a Ticket Type')
@@ -1538,7 +1534,6 @@ client.on(Events.InteractionCreate, async interaction => {
         new StringSelectMenuOptionBuilder().setLabel('Report Scammer').setValue('scammer').setEmoji('🚨').setDescription('Report a scammer or fraud'),
         new StringSelectMenuOptionBuilder().setLabel('Other').setValue('other').setEmoji('❓').setDescription('Any other issue or question'),
       );
-
     const row = new ActionRowBuilder().addComponents(menu);
     await interaction.channel.send({ embeds: [embed], components: [row] });
     return interaction.editReply({ content: '✅ Ticket panel sent!' });
