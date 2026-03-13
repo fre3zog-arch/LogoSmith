@@ -692,11 +692,11 @@ client.on(Events.GuildMemberAdd, async member => {
     const channel = member.guild.channels.cache.get(CONFIG.WELCOME_CHANNEL_ID);
     if (channel) {
       const embed = new EmbedBuilder()
-        .setColor(0x5865f2)
+        .setColor(0x57F287)
         .setTitle('Welcome to ' + member.guild.name + '! 👋')
         .setDescription(`Hey ${member}, great to have you here!\n\nYou are member **#${member.guild.memberCount}**. Make yourself at home and enjoy the community.`)
         .setThumbnail(member.user.displayAvatarURL({ dynamic: true, size: 256 }))
-        .setImage('https://i.imgur.com/wSTFkRM.png')
+        .setImage('')
         .setFooter({ text: member.guild.name + ' • Welcome', iconURL: member.guild.iconURL({ dynamic: true }) })
         .setTimestamp();
       channel.send({ embeds: [embed] });
