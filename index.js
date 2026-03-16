@@ -19,6 +19,78 @@ const {
   Events,
 } = require('discord.js');
 
+const Database = require('better-sqlite3');
+const path = require('path');
+require('dotenv').config();
+
+// ========== DATABASE SETUP ==========
+const dbPath = process.env.DB_PATH || path.join(__dirname, 'database.db');
+const db = new Database(dbPath);
+
+// Initialize database tables
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    userId TEXT PRIMARY KEY,
+    username TEXT,
+    level INTEGER DEFAULT 0,
+    xp INTEGER DEFAULT 0,
+    warnings INTEGER DEFAULT 0,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS tickets (
+    ticketId TEXT PRIMARY KEY,
+    userId TEXT NOT NULL,
+    guildId TEXT NOT NULL,
+    channelId TEXT NOT NULL,
+    status TEXT DEFAULT 'open',
+    subject TEXT,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    closedAt TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS economy (
+    userId TEXT PRIMARY KEY,
+    balance INTEGER DEFAULT 0,
+    totalEarned INTEGER DEFAULT 0,
+    updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS services (
+    serviceId TEXT PRIMARY KEY,
+    userId TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'pending',
+    rating REAL,
+    reviews INTEGER DEFAULT 0,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS ideas (
+    ideaId TEXT PRIMARY KEY,
+    userId TEXT NOT NULL,
+    messageId TEXT UNIQUE,
+    content TEXT,
+    upvotes INTEGER DEFAULT 0,
+    downvotes INTEGER DEFAULT 0,
+    promoted INTEGER DEFAULT 0,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS giveaways (
+    giveawayId TEXT PRIMARY KEY,
+    messageId TEXT UNIQUE NOT NULL,
+    channelId TEXT NOT NULL,
+    hostId TEXT NOT NULL,
+    prize TEXT,
+    endTime INTEGER NOT NULL,
+    entries TEXT,
+    winnersCount INTEGER DEFAULT 1,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
